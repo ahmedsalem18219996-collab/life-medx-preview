@@ -1,0 +1,46 @@
+name: Verify public guest preview
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify-guest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify no real backend or sensitive references
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check assets/js/store.js
+          node --check assets/js/app.js
+          grep -q 'preview: true' assets/js/store.js
+          grep -q 'if (S.preview) throw' assets/js/store.js
+          if grep -RiEq 'sb_secret_|SUPABASE_SERVICE_ROLE_KEY|bbauvsugsiskbsgbpbwk|medica-cloud.js|cloud-demo.js' index.html assets; then
+            echo "Unsafe reference in public bundle"
+            exit 1
+          fi
+          echo "PASS: synthetic demo source only"
+      - name: Verify deployed HTML and assets via HTTPS
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://ahmedsalem18219996-collab.github.io/life-medx-preview/"
+          success=0
+          for i in $(seq 1 18); do
+            status=$(curl -L -sS --max-time 15 -D headers.txt -o preview.html -w '%{http_code}' "$base" || true)
+            if [ "$status" = 200 ] && grep -q 'لايف ميديكس' preview.html && grep -iq '^content-type: text/html' headers.txt; then
+              success=1; break
+            fi
+            echo "Build not ready (attempt $i): HTTP $status"
+            sleep 5
+          done
+          [ "$success" = 1 ] || { echo "Site not ready"; exit 1; }
+          for path in assets/css/app.css assets/js/store.js assets/js/app.js assets/js/pages/dashboard.js; do
+            status=$(curl -L -sS --max-time 15 -o /dev/null -w '%{http_code}' "$base$path")
+            [ "$status" = 200 ] || { echo "Missing $path: $status"; exit 1; }
+          done
+          echo "PASS: public URL serves HTML plus static assets with HTTP 200"
